@@ -125,6 +125,30 @@
         "move": {
             "patterns": [
                 {
+                    "name": "meta.move.lan.pgn",
+                    "match": "\\b([KQRBN]?)([a-h][1-8])(-)([a-h][1-8])(?:=([QRBN]))?([+#])?",
+                    "captures": {
+                        "1": {
+                            "name": "constant.character.piece.pgn"
+                        },
+                        "2": {
+                            "name": "constant.character.square.origin.pgn"
+                        },
+                        "3": {
+                            "name": "keyword.operator.movement.pgn"
+                        },
+                        "4": {
+                            "name": "constant.character.square.target.pgn"
+                        },
+                        "5": {
+                            "name": "constant.character.promotion.pgn"
+                        },
+                        "6": {
+                            "name": "keyword.operator.check.pgn"
+                        }
+                    }
+                },
+                {
                     "name": "meta.move.san.pgn",
                     "match": "\\b([KQRBN]?)((?:[a-h][1-8]|[a-h]|[1-8]))?(x?)([a-h][1-8])(?:=([QRBN]))?([+#])?",
                     "captures": {
