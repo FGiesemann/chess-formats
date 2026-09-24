@@ -1,0 +1,88 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "epd",
+    "scopeName": "source.epd",
+    "fileTypes": [
+        ".epd"
+    ],
+    "patterns": [
+        {
+            "include": "#line"
+        }
+    ],
+    "repository": {
+        "line": {
+            "patterns": [
+                {
+                    "name": "meta.line.epd",
+                    "match": "^(\\S+)\\s+([wb])\\s+(K?Q?k?q?|-)\\s+([a-h][1-8]|-)(.*)$",
+                    "captures": {
+                        "1": {
+                            "name": "string.other.fen.board.epd"
+                        },
+                        "2": {
+                            "name": "keyword.other.fen.turn.epd"
+                        },
+                        "3": {
+                            "name": "keyword.other.fen.castling.epd"
+                        },
+                        "4": {
+                            "name": "constant.character.fen.enpassant.epd"
+                        },
+                        "5": {
+                            "patterns": [
+                                {
+                                    "include": "#opcodes"
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "invalid.illegal.epd",
+                    "match": "^.*$"
+                }
+            ]
+        },
+        "opcodes": {
+            "patterns": [
+                {
+                    "name": "meta.opcode.epd",
+                    "match": "\\s+([A-Za-z][A-Za-z0-9_]*)((?:\\s+(?:\"[^\"]*\"|[^;\\s]+))*)\\s*;",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.opcode.epd"
+                        },
+                        "2": {
+                            "patterns": [
+                                {
+                                    "include": "#operands"
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        "operands": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.epd",
+                    "match": "\"[^\"]*\""
+                },
+                {
+                    "name": "constant.numeric.integer.epd",
+                    "match": "(?<![\\w])(?:\\d+)(?![\\w])"
+                },
+                {
+                    "name": "constant.other.san.epd",
+                    "match": "(?:O-O-O|O-O|0-0-0|0-0|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)"
+                },
+                {
+                    "name": "constant.other.operand.generic.epd",
+                    "match": "[^;\\s]+"
+                }
+            ]
+        }
+    }
+}
