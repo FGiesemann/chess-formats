@@ -4,7 +4,7 @@ import { LanguageValidator } from '../common/types';
 interface OperandSpec {
     type: 'string' | 'move' | 'moves' | 'integer' | 'positiveInteger'
     | 'identifier' | 'any' | 'none';
-    count: 'one' | 'optional' | 'zeroOrMore' | 'even' | 'none';
+    count: 'one' | 'optional' | 'zeroOrMore' | 'even' | 'none' | 'any';
 }
 
 const OPCODE_SPECS: Record<string, OperandSpec> = {
@@ -27,16 +27,23 @@ const OPCODE_SPECS: Record<string, OperandSpec> = {
     acd: { type: 'integer', count: 'one' },
     ce: { type: 'integer', count: 'one' },
     dm: { type: 'integer', count: 'one' },
-    sv: { type: 'any', count: 'any' as never },
-    tc: { type: 'any', count: 'any' as never },
+    sv: { type: 'any', count: 'any' },
+    tc: { type: 'any', count: 'any' },
 };
 
 const MOVE_REGEX = /^(?:O-O-O|O-O|0-0-0|0-0|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)$/;
 const IDENTIFIER_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-interface HeaderInfo {
+interface LineInfo {
+    line: string;
+    lineIndex: number;
     fields: string[];
     ends: number[];
+    opStart: number;
+    operationsPart: string;
+    segments: { content: string; start: number }[];
+    hasUnbalancedQuote: boolean;
+    unbalancedQuoteIndex: number;
 }
 
 class EpdValidator implements LanguageValidator {
@@ -51,19 +58,21 @@ class EpdValidator implements LanguageValidator {
             const trimmed = line.trim();
             if (!trimmed || trimmed.startsWith('#')) { return; }
 
-            this.checkPiecePlacement(line, lineIndex, diagnostics);
-            this.checkSideToMove(line, lineIndex, diagnostics);
-            this.checkCastling(line, lineIndex, diagnostics);
-            this.checkEnPassant(line, lineIndex, diagnostics);
-            this.checkStringTermination(line, lineIndex, diagnostics);
-            this.checkSemicolons(line, lineIndex, diagnostics);
-            this.checkOperandTypes(line, lineIndex, diagnostics);
+            const info = this.analyzeLine(line, lineIndex);
+
+            this.checkPiecePlacement(info, diagnostics);
+            this.checkSideToMove(info, diagnostics);
+            this.checkCastling(info, diagnostics);
+            this.checkEnPassant(info, diagnostics);
+            this.checkStringTermination(info, diagnostics);
+            this.checkSemicolons(info, diagnostics);
+            this.checkOperandTypes(info, diagnostics);
         });
 
         return diagnostics;
     }
 
-    private getHeaderFields(line: string): HeaderInfo {
+    private analyzeLine(line: string, lineIndex: number): LineInfo {
         const fields: string[] = [];
         const ends: number[] = [];
         let i = 0;
@@ -75,25 +84,37 @@ class EpdValidator implements LanguageValidator {
             fields.push(line.slice(start, i));
             ends.push(i);
         }
-        return { fields, ends };
+
+        const opStart = ends.length >= 4 ? ends[3] : -1;
+        const operationsPart = opStart >= 0 ? line.slice(opStart) : '';
+        const unbalancedQuoteIndex = this.findUnbalancedQuote(operationsPart);
+        const hasUnbalancedQuote = unbalancedQuoteIndex >= 0;
+        const segments = hasUnbalancedQuote ? [] : this.splitAtSemicolons(operationsPart);
+
+        return {
+            line,
+            lineIndex,
+            fields,
+            ends,
+            opStart,
+            operationsPart,
+            segments,
+            hasUnbalancedQuote,
+            unbalancedQuoteIndex,
+        };
     }
 
-    private checkPiecePlacement(
-        line: string,
-        lineIndex: number,
-        out: vscode.Diagnostic[]
-    ) {
-        const { fields, ends } = this.getHeaderFields(line);
-        if (fields.length < 1) { return; }
+    private checkPiecePlacement(info: LineInfo, out: vscode.Diagnostic[]) {
+        if (info.fields.length < 1) { return; }
 
-        const placement = fields[0];
-        const end = ends[0];
+        const placement = info.fields[0];
+        const end = info.ends[0];
         const ranks = placement.split('/');
 
         if (ranks.length !== 8) {
             out.push(
                 new vscode.Diagnostic(
-                    new vscode.Range(lineIndex, 0, lineIndex, end),
+                    new vscode.Range(info.lineIndex, 0, info.lineIndex, end),
                     `Piece placement must contain 8 ranks separated by '/', found ${ranks.length}`,
                     vscode.DiagnosticSeverity.Error
                 )
@@ -116,7 +137,7 @@ class EpdValidator implements LanguageValidator {
             if (!valid) {
                 out.push(
                     new vscode.Diagnostic(
-                        new vscode.Range(lineIndex, 0, lineIndex, end),
+                        new vscode.Range(info.lineIndex, 0, info.lineIndex, end),
                         `Rank ${8 - rankIndex} contains invalid characters`,
                         vscode.DiagnosticSeverity.Error
                     )
@@ -124,7 +145,7 @@ class EpdValidator implements LanguageValidator {
             } else if (squares !== 8) {
                 out.push(
                     new vscode.Diagnostic(
-                        new vscode.Range(lineIndex, 0, lineIndex, end),
+                        new vscode.Range(info.lineIndex, 0, info.lineIndex, end),
                         `Rank ${8 - rankIndex} covers ${squares} squares, expected 8`,
                         vscode.DiagnosticSeverity.Error
                     )
@@ -133,20 +154,15 @@ class EpdValidator implements LanguageValidator {
         });
     }
 
-    private checkSideToMove(
-        line: string,
-        lineIndex: number,
-        out: vscode.Diagnostic[]
-    ) {
-        const { fields, ends } = this.getHeaderFields(line);
-        if (fields.length < 2) { return; }
+    private checkSideToMove(info: LineInfo, out: vscode.Diagnostic[]) {
+        if (info.fields.length < 2) { return; }
 
-        const side = fields[1];
+        const side = info.fields[1];
         if (side !== 'w' && side !== 'b') {
-            const realStart = line.indexOf(side, ends[0]);
+            const realStart = info.line.indexOf(side, info.ends[0]);
             out.push(
                 new vscode.Diagnostic(
-                    new vscode.Range(lineIndex, realStart, lineIndex, realStart + side.length),
+                    new vscode.Range(info.lineIndex, realStart, info.lineIndex, realStart + side.length),
                     `Side to move must be 'w' or 'b', found '${side}'`,
                     vscode.DiagnosticSeverity.Error
                 )
@@ -154,22 +170,20 @@ class EpdValidator implements LanguageValidator {
         }
     }
 
-    private checkCastling(
-        line: string,
-        lineIndex: number,
-        out: vscode.Diagnostic[]
-    ) {
-        const { fields } = this.getHeaderFields(line);
-        if (fields.length < 3) { return; }
+    private checkCastling(info: LineInfo, out: vscode.Diagnostic[]) {
+        if (info.fields.length < 3) { return; }
 
-        const castling = fields[2];
+        const castling = info.fields[2];
         if (castling === '-') { return; }
 
         if (!/^K?Q?k?q?$/.test(castling) || castling.length === 0) {
-            const start = line.indexOf(castling, line.indexOf(fields[1]) + fields[1].length);
+            const start = info.line.indexOf(
+                castling,
+                info.line.indexOf(info.fields[1]) + info.fields[1].length
+            );
             out.push(
                 new vscode.Diagnostic(
-                    new vscode.Range(lineIndex, start, lineIndex, start + castling.length),
+                    new vscode.Range(info.lineIndex, start, info.lineIndex, start + castling.length),
                     `Castling rights must be '-' or a combination of K, Q, k, q without repetition`,
                     vscode.DiagnosticSeverity.Error
                 )
@@ -177,23 +191,20 @@ class EpdValidator implements LanguageValidator {
         }
     }
 
-    private checkEnPassant(
-        line: string,
-        lineIndex: number,
-        out: vscode.Diagnostic[]
-    ) {
-        const { fields } = this.getHeaderFields(line);
-        if (fields.length < 4) { return; }
+    private checkEnPassant(info: LineInfo, out: vscode.Diagnostic[]) {
+        if (info.fields.length < 4) { return; }
 
-        const ep = fields[3];
+        const ep = info.fields[3];
         if (ep === '-') { return; }
 
         if (!/^[a-h][36]$/.test(ep)) {
-            const castlingEnd = line.indexOf(fields[2], line.indexOf(fields[1])) + fields[2].length;
-            const start = line.indexOf(ep, castlingEnd);
+            const castlingEnd =
+                info.line.indexOf(info.fields[2], info.line.indexOf(info.fields[1])) +
+                info.fields[2].length;
+            const start = info.line.indexOf(ep, castlingEnd);
             out.push(
                 new vscode.Diagnostic(
-                    new vscode.Range(lineIndex, start, lineIndex, start + ep.length),
+                    new vscode.Range(info.lineIndex, start, info.lineIndex, start + ep.length),
                     `En passant target must be '-' or a square on rank 3 or 6, found '${ep}'`,
                     vscode.DiagnosticSeverity.Error
                 )
@@ -201,47 +212,29 @@ class EpdValidator implements LanguageValidator {
         }
     }
 
-    private checkStringTermination(
-        line: string,
-        lineIndex: number,
-        out: vscode.Diagnostic[]
-    ) {
-        const { ends } = this.getHeaderFields(line);
-        if (ends.length < 4) { return; }
+    private checkStringTermination(info: LineInfo, out: vscode.Diagnostic[]) {
+        if (info.opStart < 0) { return; }
+        if (info.operationsPart.trim().length === 0) { return; }
+        if (!info.hasUnbalancedQuote) { return; }
 
-        const opStart = ends[3];
-        const operationsPart = line.slice(opStart);
-        if (operationsPart.trim().length === 0) { return; }
-
-        const unbalanced = this.findUnbalancedQuote(operationsPart);
-        if (unbalanced >= 0) {
-            const pos = opStart + unbalanced;
-            out.push(
-                new vscode.Diagnostic(
-                    new vscode.Range(lineIndex, pos, lineIndex, line.length),
-                    `Unterminated string literal`,
-                    vscode.DiagnosticSeverity.Warning
-                )
-            );
-        }
+        const pos = info.opStart + info.unbalancedQuoteIndex;
+        out.push(
+            new vscode.Diagnostic(
+                new vscode.Range(info.lineIndex, pos, info.lineIndex, info.line.length),
+                `Unterminated string literal`,
+                vscode.DiagnosticSeverity.Warning
+            )
+        );
     }
 
-    private checkSemicolons(
-        line: string,
-        lineIndex: number,
-        out: vscode.Diagnostic[]
-    ) {
-        const { ends } = this.getHeaderFields(line);
-        if (ends.length < 4) { return; }
+    private checkSemicolons(info: LineInfo, out: vscode.Diagnostic[]) {
+        if (info.opStart < 0) { return; }
+        if (info.operationsPart.trim().length === 0) { return; }
+        if (info.hasUnbalancedQuote) { return; }
 
-        const opStart = ends[3];
-        const operationsPart = line.slice(opStart);
-
-        if (operationsPart.trim().length === 0) { return; }
-        if (this.findUnbalancedQuote(operationsPart) >= 0) { return; }
-
-        const segments = this.splitAtSemicolons(operationsPart);
-        const last = segments.pop()!;
+        const segments = info.segments.slice();
+        const last = segments.pop();
+        if (!last) { return; }
 
         for (const seg of segments) {
             const trimmed = seg.content.trim();
@@ -249,10 +242,10 @@ class EpdValidator implements LanguageValidator {
 
             if (!this.looksLikeOpcodeStart(trimmed)) {
                 const leading = seg.content.length - seg.content.trimStart().length;
-                const segStart = opStart + seg.start + leading;
+                const segStart = info.opStart + seg.start + leading;
                 out.push(
                     new vscode.Diagnostic(
-                        new vscode.Range(lineIndex, segStart, lineIndex, segStart + 1),
+                        new vscode.Range(info.lineIndex, segStart, info.lineIndex, segStart + 1),
                         `Missing semicolon before this section (expected an opcode)`,
                         vscode.DiagnosticSeverity.Error
                     )
@@ -262,10 +255,10 @@ class EpdValidator implements LanguageValidator {
 
         if (last.content.trim().length > 0) {
             const leading = last.content.length - last.content.trimStart().length;
-            const lastStart = opStart + last.start + leading;
+            const lastStart = info.opStart + last.start + leading;
             out.push(
                 new vscode.Diagnostic(
-                    new vscode.Range(lineIndex, lastStart, lineIndex, line.length),
+                    new vscode.Range(info.lineIndex, lastStart, info.lineIndex, info.line.length),
                     `Missing semicolon at end of line`,
                     vscode.DiagnosticSeverity.Error
                 )
@@ -273,21 +266,12 @@ class EpdValidator implements LanguageValidator {
         }
     }
 
-    private checkOperandTypes(
-        line: string,
-        lineIndex: number,
-        out: vscode.Diagnostic[]
-    ) {
-        const { ends } = this.getHeaderFields(line);
-        if (ends.length < 4) { return; }
+    private checkOperandTypes(info: LineInfo, out: vscode.Diagnostic[]) {
+        if (info.opStart < 0) { return; }
+        if (info.operationsPart.trim().length === 0) { return; }
+        if (info.hasUnbalancedQuote) { return; }
 
-        const opStart = ends[3];
-        const operationsPart = line.slice(opStart);
-        if (operationsPart.trim().length === 0) { return; }
-        if (this.findUnbalancedQuote(operationsPart) >= 0) { return; }
-
-        const segments = this.splitAtSemicolons(operationsPart);
-        segments.pop();
+        const segments = info.segments.slice(0, -1);
 
         for (const seg of segments) {
             const trimmed = seg.content.trim();
@@ -296,16 +280,16 @@ class EpdValidator implements LanguageValidator {
 
             const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)([\s\S]*)$/);
             if (!match) { continue; }
+
             const opcode = match[1];
             const operandText = match[2];
-
             const spec = OPCODE_SPECS[opcode];
             if (!spec) { continue; }
 
             const leading = seg.content.length - seg.content.trimStart().length;
-            const operandOffset = opStart + seg.start + leading + opcode.length;
+            const operandOffset = info.opStart + seg.start + leading + opcode.length;
 
-            this.validateOperand(opcode, spec, operandText, lineIndex, operandOffset, out);
+            this.validateOperand(opcode, spec, operandText, info.lineIndex, operandOffset, out);
         }
     }
 
