@@ -17,6 +17,7 @@ class EpdValidator implements LanguageValidator {
             this.checkSideToMove(line, lineIndex, diagnostics);
             this.checkCastling(line, lineIndex, diagnostics);
             this.checkEnPassant(line, lineIndex, diagnostics);
+            this.checkStringTermination(line, lineIndex, diagnostics);
             this.checkSemicolons(line, lineIndex, diagnostics);
         });
 
@@ -162,6 +163,31 @@ class EpdValidator implements LanguageValidator {
         }
     }
 
+    private checkStringTermination(
+        line: string,
+        lineIndex: number,
+        out: vscode.Diagnostic[]
+    ) {
+        const { ends } = this.getHeaderFields(line);
+        if (ends.length < 4) { return; }
+
+        const opStart = ends[3];
+        const operationsPart = line.slice(opStart);
+        if (operationsPart.trim().length === 0) { return; }
+
+        const unbalanced = this.findUnbalancedQuote(operationsPart);
+        if (unbalanced >= 0) {
+            const pos = opStart + unbalanced;
+            out.push(
+                new vscode.Diagnostic(
+                    new vscode.Range(lineIndex, pos, lineIndex, line.length),
+                    `Unterminated string literal`,
+                    vscode.DiagnosticSeverity.Warning
+                )
+            );
+        }
+    }
+
     private checkSemicolons(
         line: string,
         lineIndex: number,
@@ -207,6 +233,25 @@ class EpdValidator implements LanguageValidator {
                 )
             );
         }
+    }
+
+    private findUnbalancedQuote(text: string): number {
+        let openIndex = -1;
+        for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+            if (ch === '\\' && openIndex >= 0 && i + 1 < text.length) {
+                i++;
+                continue;
+            }
+            if (ch === '"') {
+                if (openIndex < 0) {
+                    openIndex = i;
+                } else {
+                    openIndex = -1;
+                }
+            }
+        }
+        return openIndex;
     }
 
     private looksLikeOpcodeStart(text: string): boolean {
