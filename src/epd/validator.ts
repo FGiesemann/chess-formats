@@ -1,6 +1,44 @@
 import * as vscode from 'vscode';
 import { LanguageValidator } from '../common/types';
 
+interface OperandSpec {
+    type: 'string' | 'move' | 'moves' | 'integer' | 'positiveInteger'
+    | 'identifier' | 'any' | 'none';
+    count: 'one' | 'optional' | 'zeroOrMore' | 'even' | 'none';
+}
+
+const OPCODE_SPECS: Record<string, OperandSpec> = {
+    bm: { type: 'moves', count: 'zeroOrMore' },
+    em: { type: 'moves', count: 'zeroOrMore' },
+    id: { type: 'string', count: 'one' },
+    hmvc: { type: 'integer', count: 'one' },
+    fmvn: { type: 'positiveInteger', count: 'one' },
+    pm: { type: 'move', count: 'one' },
+    sm: { type: 'move', count: 'one' },
+    pv: { type: 'moves', count: 'zeroOrMore' },
+    rc: { type: 'positiveInteger', count: 'one' },
+    nic: { type: 'string', count: 'optional' },
+    resign: { type: 'none', count: 'none' },
+    noop: { type: 'any', count: 'zeroOrMore' },
+    refcom: { type: 'identifier', count: 'one' },
+    refereq: { type: 'identifier', count: 'one' },
+    ts: { type: 'any', count: 'even' },
+    ptp: { type: 'any', count: 'even' },
+    acd: { type: 'integer', count: 'one' },
+    ce: { type: 'integer', count: 'one' },
+    dm: { type: 'integer', count: 'one' },
+    sv: { type: 'any', count: 'any' as never },
+    tc: { type: 'any', count: 'any' as never },
+};
+
+const MOVE_REGEX = /^(?:O-O-O|O-O|0-0-0|0-0|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)$/;
+const IDENTIFIER_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+interface HeaderInfo {
+    fields: string[];
+    ends: number[];
+}
+
 class EpdValidator implements LanguageValidator {
     languageId = 'epd';
     extensions = ['.epd'];
@@ -19,12 +57,13 @@ class EpdValidator implements LanguageValidator {
             this.checkEnPassant(line, lineIndex, diagnostics);
             this.checkStringTermination(line, lineIndex, diagnostics);
             this.checkSemicolons(line, lineIndex, diagnostics);
+            this.checkOperandTypes(line, lineIndex, diagnostics);
         });
 
         return diagnostics;
     }
 
-    private getHeaderFields(line: string): { fields: string[]; ends: number[] } {
+    private getHeaderFields(line: string): HeaderInfo {
         const fields: string[] = [];
         const ends: number[] = [];
         let i = 0;
@@ -104,7 +143,6 @@ class EpdValidator implements LanguageValidator {
 
         const side = fields[1];
         if (side !== 'w' && side !== 'b') {
-            const start = ends[0] + (fields[0].length - fields[0].trimEnd().length);
             const realStart = line.indexOf(side, ends[0]);
             out.push(
                 new vscode.Diagnostic(
@@ -200,17 +238,18 @@ class EpdValidator implements LanguageValidator {
         const operationsPart = line.slice(opStart);
 
         if (operationsPart.trim().length === 0) { return; }
+        if (this.findUnbalancedQuote(operationsPart) >= 0) { return; }
 
-        const segments = operationsPart.split(';');
-        const lastSegment = segments.pop() ?? '';
+        const segments = this.splitAtSemicolons(operationsPart);
+        const last = segments.pop()!;
 
-        let cursor = opStart;
         for (const seg of segments) {
-            const leading = seg.length - seg.trimStart().length;
-            const segStart = cursor + leading;
-            const trimmed = seg.trim();
+            const trimmed = seg.content.trim();
+            if (trimmed.length === 0) { continue; }
 
-            if (trimmed.length > 0 && !this.looksLikeOpcodeStart(trimmed)) {
+            if (!this.looksLikeOpcodeStart(trimmed)) {
+                const leading = seg.content.length - seg.content.trimStart().length;
+                const segStart = opStart + seg.start + leading;
                 out.push(
                     new vscode.Diagnostic(
                         new vscode.Range(lineIndex, segStart, lineIndex, segStart + 1),
@@ -219,12 +258,11 @@ class EpdValidator implements LanguageValidator {
                     )
                 );
             }
-
-            cursor += seg.length + 1;
         }
 
-        if (lastSegment.trim().length > 0) {
-            const lastStart = cursor + (lastSegment.length - lastSegment.trimStart().length);
+        if (last.content.trim().length > 0) {
+            const leading = last.content.length - last.content.trimStart().length;
+            const lastStart = opStart + last.start + leading;
             out.push(
                 new vscode.Diagnostic(
                     new vscode.Range(lineIndex, lastStart, lineIndex, line.length),
@@ -232,6 +270,161 @@ class EpdValidator implements LanguageValidator {
                     vscode.DiagnosticSeverity.Error
                 )
             );
+        }
+    }
+
+    private checkOperandTypes(
+        line: string,
+        lineIndex: number,
+        out: vscode.Diagnostic[]
+    ) {
+        const { ends } = this.getHeaderFields(line);
+        if (ends.length < 4) { return; }
+
+        const opStart = ends[3];
+        const operationsPart = line.slice(opStart);
+        if (operationsPart.trim().length === 0) { return; }
+        if (this.findUnbalancedQuote(operationsPart) >= 0) { return; }
+
+        const segments = this.splitAtSemicolons(operationsPart);
+        segments.pop();
+
+        for (const seg of segments) {
+            const trimmed = seg.content.trim();
+            if (trimmed.length === 0) { continue; }
+            if (!this.looksLikeOpcodeStart(trimmed)) { continue; }
+
+            const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)([\s\S]*)$/);
+            if (!match) { continue; }
+            const opcode = match[1];
+            const operandText = match[2];
+
+            const spec = OPCODE_SPECS[opcode];
+            if (!spec) { continue; }
+
+            const leading = seg.content.length - seg.content.trimStart().length;
+            const operandOffset = opStart + seg.start + leading + opcode.length;
+
+            this.validateOperand(opcode, spec, operandText, lineIndex, operandOffset, out);
+        }
+    }
+
+    private validateOperand(
+        opcode: string,
+        spec: OperandSpec,
+        operandText: string,
+        lineIndex: number,
+        operandOffset: number,
+        out: vscode.Diagnostic[]
+    ) {
+        const trimmed = operandText.trim();
+
+        if (spec.type === 'none') {
+            if (trimmed.length > 0) {
+                out.push(
+                    new vscode.Diagnostic(
+                        new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
+                        `Opcode '${opcode}' takes no operands`,
+                        vscode.DiagnosticSeverity.Error
+                    )
+                );
+            }
+            return;
+        }
+
+        if (trimmed.length === 0) {
+            if (spec.count === 'one') {
+                out.push(
+                    new vscode.Diagnostic(
+                        new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
+                        `Opcode '${opcode}' requires an operand`,
+                        vscode.DiagnosticSeverity.Error
+                    )
+                );
+            }
+            return;
+        }
+
+        if (spec.type === 'string') {
+            if (!/^"(?:[^"\\]|\\.)*"$/.test(trimmed)) {
+                out.push(
+                    new vscode.Diagnostic(
+                        new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
+                        `Opcode '${opcode}' expects a string operand in double quotes`,
+                        vscode.DiagnosticSeverity.Error
+                    )
+                );
+            }
+            return;
+        }
+
+        if (spec.type === 'integer') {
+            if (!/^\d+$/.test(trimmed)) {
+                out.push(
+                    new vscode.Diagnostic(
+                        new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
+                        `Opcode '${opcode}' expects a non-negative integer`,
+                        vscode.DiagnosticSeverity.Error
+                    )
+                );
+            }
+            return;
+        }
+
+        if (spec.type === 'positiveInteger') {
+            if (!/^\d+$/.test(trimmed) || parseInt(trimmed, 10) === 0) {
+                out.push(
+                    new vscode.Diagnostic(
+                        new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
+                        `Opcode '${opcode}' expects a positive integer`,
+                        vscode.DiagnosticSeverity.Error
+                    )
+                );
+            }
+            return;
+        }
+
+        if (spec.type === 'identifier') {
+            if (!IDENTIFIER_REGEX.test(trimmed)) {
+                out.push(
+                    new vscode.Diagnostic(
+                        new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
+                        `Opcode '${opcode}' expects an identifier (no quotes)`,
+                        vscode.DiagnosticSeverity.Error
+                    )
+                );
+            }
+            return;
+        }
+
+        if (spec.type === 'move') {
+            if (!MOVE_REGEX.test(trimmed)) {
+                out.push(
+                    new vscode.Diagnostic(
+                        new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
+                        `Opcode '${opcode}' expects a single move, found '${trimmed}'`,
+                        vscode.DiagnosticSeverity.Error
+                    )
+                );
+            }
+            return;
+        }
+
+        if (spec.type === 'moves') {
+            const moves = trimmed.split(/\s+/);
+            for (const move of moves) {
+                if (!MOVE_REGEX.test(move)) {
+                    out.push(
+                        new vscode.Diagnostic(
+                            new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
+                            `Opcode '${opcode}' contains an invalid move: '${move}'`,
+                            vscode.DiagnosticSeverity.Error
+                        )
+                    );
+                    return;
+                }
+            }
+            return;
         }
     }
 
@@ -252,6 +445,36 @@ class EpdValidator implements LanguageValidator {
             }
         }
         return openIndex;
+    }
+
+    private splitAtSemicolons(text: string): { content: string; start: number }[] {
+        const result: { content: string; start: number }[] = [];
+        let current = '';
+        let currentStart = 0;
+        let inString = false;
+
+        for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+            if (ch === '\\' && inString && i + 1 < text.length) {
+                current += ch + text[i + 1];
+                i++;
+                continue;
+            }
+            if (ch === '"') {
+                inString = !inString;
+                current += ch;
+                continue;
+            }
+            if (ch === ';' && !inString) {
+                result.push({ content: current, start: currentStart });
+                current = '';
+                currentStart = i + 1;
+                continue;
+            }
+            current += ch;
+        }
+        result.push({ content: current, start: currentStart });
+        return result;
     }
 
     private looksLikeOpcodeStart(text: string): boolean {
