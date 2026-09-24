@@ -1,0 +1,1 @@
+export { epdValidator } from './validator';

@@ -9,7 +9,10 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onLanguage:pgn",
+    "onLanguage:epd"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
