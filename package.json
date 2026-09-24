@@ -12,10 +12,38 @@
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
-    "commands": [
+    "languages": [
       {
-        "command": "chess-formats.helloWorld",
-        "title": "Hello World"
+        "id": "pgn",
+        "aliases": [
+          "PGN",
+          "pgn"
+        ],
+        "extensions": [
+          ".pgn"
+        ]
+      },
+      {
+        "id": "epd",
+        "aliases": [
+          "EPD",
+          "epd"
+        ],
+        "extensions": [
+          ".epd"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "pgn",
+        "scopeName": "source.pgn",
+        "path": "./syntaxes/pgn.tmLanguage.json"
+      },
+      {
+        "language": "epd",
+        "scopeName": "source.epd",
+        "path": "./syntaxes/epd.tmLanguage.json"
       }
     ]
   },

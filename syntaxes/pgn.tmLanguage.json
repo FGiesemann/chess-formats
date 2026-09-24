@@ -1,0 +1,166 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "pgn",
+    "scopeName": "source.pgn",
+    "fileTypes": [
+        ".pgn"
+    ],
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#tag-pair"
+        },
+        {
+            "include": "#movetext"
+        },
+        {
+            "include": "#results"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.block.curly.pgn",
+                    "begin": "\\{",
+                    "end": "\\}",
+                    "patterns": [
+                        {
+                            "include": "#escapes"
+                        }
+                    ]
+                },
+                {
+                    "name": "comment.line.semicolon.pgn",
+                    "match": ";.*$"
+                }
+            ]
+        },
+        "escapes": {
+            "patterns": [
+                {
+                    "name": "constant.character.escape.pgn",
+                    "match": "\\\\."
+                }
+            ]
+        },
+        "tag-pair": {
+            "patterns": [
+                {
+                    "name": "meta.tag.pair.pgn",
+                    "match": "\\[\\s*([A-Za-z][A-Za-z0-9_]*)\\s+(\"(?:[^\"\\\\]|\\\\.)*\")\\s*\\]",
+                    "captures": {
+                        "1": {
+                            "name": "entity.name.tag.pgn"
+                        },
+                        "2": {
+                            "name": "string.quoted.double.pgn"
+                        }
+                    }
+                },
+                {
+                    "name": "invalid.illegal.tag.pgn",
+                    "match": "\\[[^\\]]*$"
+                }
+            ]
+        },
+        "movetext": {
+            "patterns": [
+                {
+                    "include": "#variation"
+                },
+                {
+                    "include": "#move-number"
+                },
+                {
+                    "include": "#nag"
+                },
+                {
+                    "include": "#castling"
+                },
+                {
+                    "include": "#move"
+                }
+            ]
+        },
+        "variation": {
+            "name": "meta.variation.pgn",
+            "begin": "\\(",
+            "end": "\\)",
+            "patterns": [
+                {
+                    "include": "#comments"
+                },
+                {
+                    "include": "#movetext"
+                }
+            ]
+        },
+        "move-number": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.move-number.pgn",
+                    "match": "\\b\\d+\\.(?:\\.\\.)?"
+                }
+            ]
+        },
+        "nag": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.nag.pgn",
+                    "match": "\\$\\d+"
+                }
+            ]
+        },
+        "castling": {
+            "patterns": [
+                {
+                    "name": "keyword.control.castling.pgn",
+                    "match": "\\b(?:O-O-O|O-O|0-0-0|0-0)\\b[+#]?"
+                }
+            ]
+        },
+        "move": {
+            "patterns": [
+                {
+                    "name": "meta.move.san.pgn",
+                    "match": "\\b([KQRBN]?)((?:[a-h][1-8]|[a-h]|[1-8]))?(x?)([a-h][1-8])(?:=([QRBN]))?([+#])?",
+                    "captures": {
+                        "1": {
+                            "name": "constant.character.piece.pgn"
+                        },
+                        "2": {
+                            "name": "constant.character.disambiguation.pgn"
+                        },
+                        "3": {
+                            "name": "keyword.operator.capture.pgn"
+                        },
+                        "4": {
+                            "name": "constant.character.square.target.pgn"
+                        },
+                        "5": {
+                            "name": "constant.character.promotion.pgn"
+                        },
+                        "6": {
+                            "name": "keyword.operator.check.pgn"
+                        }
+                    }
+                },
+                {
+                    "name": "constant.character.square.pawn.pgn",
+                    "match": "\\b[a-h][1-8](?:=[QRBN])?[+#]?"
+                }
+            ]
+        },
+        "results": {
+            "patterns": [
+                {
+                    "name": "constant.language.result.pgn",
+                    "match": "(?<![\\w])(?:1-0|0-1|1/2-1/2|\\*)(?![\\w])"
+                }
+            ]
+        }
+    }
+}
