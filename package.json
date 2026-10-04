@@ -6,7 +6,7 @@
   "publisher": "FGiesemann",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/FGiesemann/chess-formats"
+    "url": "https://github.com/FGiesemann/chess-formats"
   },
   "icon": "images/icon_256.png",
   "license": "MIT",
