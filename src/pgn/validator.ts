@@ -12,12 +12,14 @@ const REQUIRED_TAGS = [
 ] as const;
 
 const VALID_RESULTS = ['1-0', '0-1', '1/2-1/2', '*'];
+
 const TAG_REGEX = /^\[\s*([A-Za-z][A-Za-z0-9_]*)\s+"((?:[^"\\]|\\.)*)"\s*\]\s*$/;
 const DATE_REGEX = /^\d{4}\.(?:\d{2}|\?\?)\.(?:\d{2}|\?\?)$/;
-const SAN_REGEX = /^(?:[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?|O-O(?:-O)?[+#]?)$/;
-const LAN_REGEX = /^[KQRBN]?[a-h][1-8][-x]?[a-h][1-8](?:=[QRBN])?[+#]?$/;
-const LAN_CASTLE_REGEX = /^[a-h][1-8][-x]?[a-h][1-8](?:[+#])?$/;
-const MOVE_NUMBER_REGEX = /^\d+\.{0,3}$/;
+
+const SAN_REGEX = /^(?:[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?|O-O(?:-O)?[+#]?)[!?]*$/;
+const LAN_REGEX = /^[a-h][1-8][-x]?[a-h][1-8](?:=[QRBN])?[+#]?[!?]*$/;
+const LAN_CASTLE_REGEX = /^[a-h][1-8][-x]?[a-h][1-8][+#]?$/;
+const MOVE_NUMBER_REGEX = /^(\d+)(\.{1,3})$/;
 const NAG_REGEX = /^\$\d+$/;
 const RESULT_TOKEN_REGEX = /^(?:1-0|0-1|1\/2-1\/2|\*)$/;
 
@@ -43,6 +45,12 @@ interface TextLine {
     startOffset: number;
 }
 
+interface MoveState {
+    moveNumber: number;
+    toMove: 'w' | 'b';
+    lastBeforeMove: { moveNumber: number; toMove: 'w' | 'b' } | null;
+}
+
 class PgnValidator implements LanguageValidator {
     languageId = 'pgn';
     extensions = ['.pgn'];
@@ -61,46 +69,13 @@ class PgnValidator implements LanguageValidator {
         return diagnostics;
     }
 
-    private isMoveNumberToken(token: string): boolean {
-        return MOVE_NUMBER_REGEX.test(token);
-    }
-
-    private isNagToken(token: string): boolean {
-        return NAG_REGEX.test(token);
-    }
-
-    private isResultToken(token: string): boolean {
-        return RESULT_TOKEN_REGEX.test(token);
-    }
-
-    private isSanMove(token: string): boolean {
-        return SAN_REGEX.test(token);
-    }
-
-    private isLanMove(token: string): boolean {
-        return LAN_REGEX.test(token);
-    }
-
-    private looksLikeCastlingLan(token: string): boolean {
-        if (!LAN_CASTLE_REGEX.test(token)) { return false; }
-        const from = token.slice(0, 2);
-        const to = token.slice(token.length - (token.endsWith('+') || token.endsWith('#') ? 3 : 2),
-            token.length - (token.endsWith('+') || token.endsWith('#') ? 1 : 0));
-        return (from === 'e1' && (to === 'g1' || to === 'c1')) ||
-            (from === 'e8' && (to === 'g8' || to === 'c8'));
-    }
-
-    private looksLikeMoveAttempt(token: string): boolean {
-        return /^[a-hKQRBNO0-9]/.test(token) || token.includes('-');
-    }
-
     private splitLinesWithOffsets(text: string): TextLine[] {
         const result: TextLine[] = [];
         let offset = 0;
         while (offset <= text.length) {
-            let lineEnd = text.indexOf('\n', offset);
-            let nextOffset: number;
+            const lineEnd = text.indexOf('\n', offset);
             let lineText: string;
+            let nextOffset: number;
             if (lineEnd < 0) {
                 lineText = text.slice(offset);
                 nextOffset = text.length + 1;
@@ -171,17 +146,11 @@ class PgnValidator implements LanguageValidator {
             const line = lines[i].text;
             const trimmed = line.trim();
 
-            if (trimmed === '') {
-                continue;
-            }
+            if (trimmed === '') { continue; }
 
             if (trimmed.startsWith('[')) {
-                if (inMovetext) {
-                    flushGame();
-                }
-                if (tagStartLine < 0) {
-                    tagStartLine = i;
-                }
+                if (inMovetext) { flushGame(); }
+                if (tagStartLine < 0) { tagStartLine = i; }
                 tagEndLine = i;
                 currentTags.push({
                     name: '',
@@ -331,6 +300,26 @@ class PgnValidator implements LanguageValidator {
         let lastResultValue: string | null = null;
         let lastTokenText = '';
 
+        const stateStack: MoveState[] = [
+            { moveNumber: 1, toMove: 'w', lastBeforeMove: null },
+        ];
+
+        const current = (): MoveState => stateStack[stateStack.length - 1];
+
+        const pushVariation = () => {
+            const c = current();
+            const inherited = c.lastBeforeMove ?? { moveNumber: c.moveNumber, toMove: c.toMove };
+            stateStack.push({
+                moveNumber: inherited.moveNumber,
+                toMove: inherited.toMove,
+                lastBeforeMove: null,
+            });
+        };
+
+        const popVariation = () => {
+            if (stateStack.length > 1) { stateStack.pop(); }
+        };
+
         for (let li = 0; li < lines.length; li++) {
             const line = lines[li].text;
             const docLine = baseLineIndex + li;
@@ -380,6 +369,7 @@ class PgnValidator implements LanguageValidator {
                         parenOpenLine = docLine;
                         parenOpenChar = ci;
                     }
+                    pushVariation();
                     ci++;
                     continue;
                 }
@@ -398,6 +388,7 @@ class PgnValidator implements LanguageValidator {
                         parenOpenLine = -1;
                         parenOpenChar = -1;
                     }
+                    popVariation();
                     ci++;
                     continue;
                 }
@@ -408,15 +399,34 @@ class PgnValidator implements LanguageValidator {
                 }
 
                 const tokenStart = ci;
-                while (ci < line.length && !/\s/.test(line[ci])) {
+                while (ci < line.length &&
+                    !/\s/.test(line[ci]) &&
+                    line[ci] !== '(' &&
+                    line[ci] !== ')' &&
+                    line[ci] !== '{' &&
+                    line[ci] !== '}' &&
+                    line[ci] !== ';') {
                     ci++;
                 }
                 const token = line.slice(tokenStart, ci);
 
-                if (this.isMoveNumberToken(token)) { continue; }
-                if (this.isNagToken(token)) { continue; }
+                const moveNumberMatch = token.match(MOVE_NUMBER_REGEX);
+                if (moveNumberMatch) {
+                    this.checkMoveNumberToken(
+                        token,
+                        moveNumberMatch,
+                        docLine,
+                        tokenStart,
+                        current(),
+                        parenDepth > 0,
+                        out
+                    );
+                    continue;
+                }
 
-                const isResult = this.isResultToken(token);
+                if (NAG_REGEX.test(token)) { continue; }
+
+                const isResult = RESULT_TOKEN_REGEX.test(token);
                 lastContentLine = docLine;
                 lastContentChar = tokenStart;
                 lastContentLength = token.length;
@@ -426,10 +436,13 @@ class PgnValidator implements LanguageValidator {
 
                 if (isResult) { continue; }
 
-                if (this.isSanMove(token)) { continue; }
+                if (SAN_REGEX.test(token)) {
+                    this.advanceMoveState(current());
+                    continue;
+                }
 
-                if (this.isLanMove(token)) {
-                    if (this.looksLikeCastlingLan(token)) {
+                if (LAN_REGEX.test(token)) {
+                    if (LAN_CASTLE_REGEX.test(token) && this.looksLikeCastlingLan(token)) {
                         out.push(
                             new vscode.Diagnostic(
                                 new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
@@ -446,6 +459,7 @@ class PgnValidator implements LanguageValidator {
                             )
                         );
                     }
+                    this.advanceMoveState(current());
                     continue;
                 }
 
@@ -534,6 +548,105 @@ class PgnValidator implements LanguageValidator {
                 }
             }
         }
+    }
+
+    private checkMoveNumberToken(
+        token: string,
+        match: RegExpMatchArray,
+        docLine: number,
+        tokenStart: number,
+        state: MoveState,
+        inVariation: boolean,
+        out: vscode.Diagnostic[]
+    ) {
+        const num = parseInt(match[1], 10);
+        const dots = match[2];
+
+        if (dots === '..') {
+            out.push(
+                new vscode.Diagnostic(
+                    new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
+                    `Move number '${token}' uses two dots; use '.' or '...'`,
+                    vscode.DiagnosticSeverity.Warning
+                )
+            );
+        }
+
+        const wantsBlack = dots === '...';
+        const isWhiteTurn = state.toMove === 'w';
+
+        if (wantsBlack && isWhiteTurn) {
+            out.push(
+                new vscode.Diagnostic(
+                    new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
+                    `'...' indicates Black to move, but it is White's turn`,
+                    vscode.DiagnosticSeverity.Warning
+                )
+            );
+        }
+
+        if (!inVariation && num < state.moveNumber) {
+            out.push(
+                new vscode.Diagnostic(
+                    new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
+                    `Move number ${num} is lower than expected ${state.moveNumber}`,
+                    vscode.DiagnosticSeverity.Warning
+                )
+            );
+        }
+
+        if (num !== state.moveNumber) {
+            out.push(
+                new vscode.Diagnostic(
+                    new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
+                    `Unexpected move number ${num}, expected ${state.moveNumber}`,
+                    vscode.DiagnosticSeverity.Error
+                )
+            );
+        } else if (num === state.moveNumber + 1 && !isWhiteTurn) {
+            out.push(
+                new vscode.Diagnostic(
+                    new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
+                    `Move number ${num} starts a new move, but it is Black's turn`,
+                    vscode.DiagnosticSeverity.Warning
+                )
+            );
+        }
+
+        state.moveNumber = num;
+    }
+
+    private advanceMoveState(state: MoveState) {
+        state.lastBeforeMove = {
+            moveNumber: state.moveNumber,
+            toMove: state.toMove,
+        };
+        if (state.toMove === 'w') {
+            state.toMove = 'b';
+        } else {
+            state.toMove = 'w';
+            state.moveNumber += 1;
+        }
+    }
+
+    private looksLikeCastlingLan(token: string): boolean {
+        let core = token;
+        if (core.endsWith('+') || core.endsWith('#')) {
+            core = core.slice(0, -1);
+        }
+        core = core.replace(/[!?]+$/, '');
+        const match = core.match(/^([a-h][1-8])[-x]?([a-h][1-8])$/);
+        if (!match) { return false; }
+        const from = match[1];
+        const to = match[2];
+        return (
+            (from === 'e1' && (to === 'g1' || to === 'c1')) ||
+            (from === 'e8' && (to === 'g8' || to === 'c8'))
+        );
+    }
+
+    private looksLikeMoveAttempt(token: string): boolean {
+        return /^[a-hKQRBNO0-9]/.test(token) || token.includes('-');
     }
 }
 
