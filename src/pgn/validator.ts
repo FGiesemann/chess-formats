@@ -12,10 +12,14 @@ const REQUIRED_TAGS = [
 ] as const;
 
 const VALID_RESULTS = ['1-0', '0-1', '1/2-1/2', '*'];
-
 const TAG_REGEX = /^\[\s*([A-Za-z][A-Za-z0-9_]*)\s+"((?:[^"\\]|\\.)*)"\s*\]\s*$/;
-
 const DATE_REGEX = /^\d{4}\.(?:\d{2}|\?\?)\.(?:\d{2}|\?\?)$/;
+const SAN_REGEX = /^(?:[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?|O-O(?:-O)?[+#]?)$/;
+const LAN_REGEX = /^[KQRBN]?[a-h][1-8][-x]?[a-h][1-8](?:=[QRBN])?[+#]?$/;
+const LAN_CASTLE_REGEX = /^[a-h][1-8][-x]?[a-h][1-8](?:[+#])?$/;
+const MOVE_NUMBER_REGEX = /^\d+\.{0,3}$/;
+const NAG_REGEX = /^\$\d+$/;
+const RESULT_TOKEN_REGEX = /^(?:1-0|0-1|1\/2-1\/2|\*)$/;
 
 interface Tag {
     name: string;
@@ -55,6 +59,39 @@ class PgnValidator implements LanguageValidator {
         }
 
         return diagnostics;
+    }
+
+    private isMoveNumberToken(token: string): boolean {
+        return MOVE_NUMBER_REGEX.test(token);
+    }
+
+    private isNagToken(token: string): boolean {
+        return NAG_REGEX.test(token);
+    }
+
+    private isResultToken(token: string): boolean {
+        return RESULT_TOKEN_REGEX.test(token);
+    }
+
+    private isSanMove(token: string): boolean {
+        return SAN_REGEX.test(token);
+    }
+
+    private isLanMove(token: string): boolean {
+        return LAN_REGEX.test(token);
+    }
+
+    private looksLikeCastlingLan(token: string): boolean {
+        if (!LAN_CASTLE_REGEX.test(token)) { return false; }
+        const from = token.slice(0, 2);
+        const to = token.slice(token.length - (token.endsWith('+') || token.endsWith('#') ? 3 : 2),
+            token.length - (token.endsWith('+') || token.endsWith('#') ? 1 : 0));
+        return (from === 'e1' && (to === 'g1' || to === 'c1')) ||
+            (from === 'e8' && (to === 'g8' || to === 'c8'));
+    }
+
+    private looksLikeMoveAttempt(token: string): boolean {
+        return /^[a-hKQRBNO0-9]/.test(token) || token.includes('-');
     }
 
     private splitLinesWithOffsets(text: string): TextLine[] {
@@ -289,10 +326,10 @@ class PgnValidator implements LanguageValidator {
 
         let lastContentLine = -1;
         let lastContentChar = -1;
+        let lastContentLength = 0;
         let lastContentIsResult = false;
         let lastResultValue: string | null = null;
-
-        let lastContentLength = 0;
+        let lastTokenText = '';
 
         for (let li = 0; li < lines.length; li++) {
             const line = lines[li].text;
@@ -334,6 +371,9 @@ class PgnValidator implements LanguageValidator {
                     ci++;
                     continue;
                 }
+                if (ch === ';') {
+                    break;
+                }
                 if (ch === '(') {
                     parenDepth++;
                     if (parenDepth === 1) {
@@ -367,23 +407,56 @@ class PgnValidator implements LanguageValidator {
                     continue;
                 }
 
-                // Token-Anfang gefunden: Token bis zum nächsten Whitespace lesen
                 const tokenStart = ci;
                 while (ci < line.length && !/\s/.test(line[ci])) {
                     ci++;
                 }
                 const token = line.slice(tokenStart, ci);
 
+                if (this.isMoveNumberToken(token)) { continue; }
+                if (this.isNagToken(token)) { continue; }
+
+                const isResult = this.isResultToken(token);
                 lastContentLine = docLine;
                 lastContentChar = tokenStart;
                 lastContentLength = token.length;
+                lastTokenText = token;
+                lastContentIsResult = isResult;
+                lastResultValue = isResult ? token : null;
 
-                if (token === '1-0' || token === '0-1' || token === '1/2-1/2' || token === '*') {
-                    lastContentIsResult = true;
-                    lastResultValue = token;
-                } else {
-                    lastContentIsResult = false;
-                    lastResultValue = null;
+                if (isResult) { continue; }
+
+                if (this.isSanMove(token)) { continue; }
+
+                if (this.isLanMove(token)) {
+                    if (this.looksLikeCastlingLan(token)) {
+                        out.push(
+                            new vscode.Diagnostic(
+                                new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
+                                `Castling should be written as 'O-O' or 'O-O-O' instead of '${token}'`,
+                                vscode.DiagnosticSeverity.Warning
+                            )
+                        );
+                    } else {
+                        out.push(
+                            new vscode.Diagnostic(
+                                new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
+                                `Long algebraic notation '${token}' is accepted but not the PGN export format`,
+                                vscode.DiagnosticSeverity.Warning
+                            )
+                        );
+                    }
+                    continue;
+                }
+
+                if (this.looksLikeMoveAttempt(token)) {
+                    out.push(
+                        new vscode.Diagnostic(
+                            new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
+                            `Invalid SAN move '${token}'`,
+                            vscode.DiagnosticSeverity.Error
+                        )
+                    );
                 }
             }
         }
@@ -419,11 +492,6 @@ class PgnValidator implements LanguageValidator {
             return;
         }
 
-        const lastTokenText = lines[lastContentLine - baseLineIndex].text.slice(
-            lastContentChar,
-            lastContentChar + lastContentLength
-        );
-
         if (!lastContentIsResult || lastResultValue === null) {
             const markerLike =
                 /^[0-9/\-]+$/.test(lastTokenText) && /[-\/]/.test(lastTokenText);
@@ -439,17 +507,6 @@ class PgnValidator implements LanguageValidator {
                         lastContentChar + lastContentLength
                     ),
                     message,
-                    vscode.DiagnosticSeverity.Error
-                )
-            );
-            return;
-        }
-
-        if (!lastContentIsResult || lastResultValue === null) {
-            out.push(
-                new vscode.Diagnostic(
-                    new vscode.Range(lastContentLine, lastContentChar, lastContentLine, lastContentChar + 1),
-                    `Missing game termination marker (1-0, 0-1, 1/2-1/2 or *)`,
                     vscode.DiagnosticSeverity.Error
                 )
             );
