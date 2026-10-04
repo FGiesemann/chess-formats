@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { LanguageValidator } from './common/types';
 import { epdValidator } from './epd';
 import { pgnValidator } from './pgn';
+import { PgnHoverProvider } from './pgn/hover_provider';
 
 const validators: LanguageValidator[] = [
 	epdValidator,
@@ -62,6 +63,11 @@ export function activate(context: vscode.ExtensionContext) {
 			const validator = pickValidator(doc);
 			if (validator) { collections.get(validator.languageId)?.delete(doc.uri); }
 		})
+	);
+
+	const pgnHoverProvider = new PgnHoverProvider(pgnValidator);
+	context.subscriptions.push(
+		vscode.languages.registerHoverProvider('pgn', pgnHoverProvider)
 	);
 }
 

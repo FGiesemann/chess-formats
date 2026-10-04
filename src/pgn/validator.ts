@@ -47,13 +47,13 @@ interface TextLine {
     startOffset: number;
 }
 
-interface MoveState {
+export interface MoveState {
     moveNumber: number;
     toMove: 'w' | 'b';
     lastBeforeMove: { moveNumber: number; toMove: 'w' | 'b' } | null;
 }
 
-class PgnValidator implements LanguageValidator {
+export class PgnValidator implements LanguageValidator {
     languageId = 'pgn';
     extensions = ['.pgn'];
 
@@ -666,6 +666,120 @@ class PgnValidator implements LanguageValidator {
     private looksLikeMoveAttempt(token: string): boolean {
         return /^[a-hKQRBNO0-9]/.test(token) || token.includes('-');
     }
+
+    getStateAtPosition(
+        document: vscode.TextDocument,
+        position: vscode.Position
+    ): MoveState | null {
+        const text = document.getText();
+        const offset = document.offsetAt(position);
+        const games = this.splitGames(text);
+
+        for (const game of games) {
+            const start = game.movetextStartOffset;
+            const end = game.movetextEndOffset;
+            if (start < 0 || end <= start) { continue; }
+            if (offset < start || offset >= end) { continue; }
+
+            const parsedTags = this.parseTags(game, []);
+            const initialState = this.getInitialState(parsedTags);
+            const movetext = text.slice(start, end);
+            const lines = this.splitLinesWithOffsets(movetext);
+            const baseLineIndex = this.offsetToLineIndex(text, start);
+
+            const stateStack: MoveState[] = [initialState];
+            const current = (): MoveState => stateStack[stateStack.length - 1];
+
+            let braceDepth = 0;
+
+            for (let li = 0; li < lines.length; li++) {
+                const line = lines[li].text;
+                const docLine = baseLineIndex + li;
+                const lineStartOffset = lines[li].startOffset + start;
+
+                let ci = 0;
+                while (ci < line.length) {
+                    const ch = line[ci];
+
+                    if (braceDepth > 0) {
+                        if (ch === '}') { braceDepth--; }
+                        ci++;
+                        continue;
+                    }
+                    if (ch === '{') {
+                        braceDepth++;
+                        ci++;
+                        continue;
+                    }
+                    if (ch === '(') {
+                        const c = current();
+                        const inherited = c.lastBeforeMove ?? {
+                            moveNumber: c.moveNumber,
+                            toMove: c.toMove,
+                        };
+                        stateStack.push({
+                            moveNumber: inherited.moveNumber,
+                            toMove: inherited.toMove,
+                            lastBeforeMove: null,
+                        });
+                        ci++;
+                        continue;
+                    }
+                    if (ch === ')') {
+                        if (stateStack.length > 1) { stateStack.pop(); }
+                        ci++;
+                        continue;
+                    }
+                    if (/\s/.test(ch)) {
+                        ci++;
+                        continue;
+                    }
+                    if (ch === ';') { break; }
+
+                    const tokenStart = ci;
+                    while (
+                        ci < line.length &&
+                        !/\s/.test(line[ci]) &&
+                        line[ci] !== '(' &&
+                        line[ci] !== ')' &&
+                        line[ci] !== '{' &&
+                        line[ci] !== '}' &&
+                        line[ci] !== ';'
+                    ) {
+                        ci++;
+                    }
+
+                    const globalTokenStart = lineStartOffset + tokenStart;
+                    const globalTokenEnd = lineStartOffset + ci;
+
+                    if (globalTokenStart <= offset && offset < globalTokenEnd) {
+                        return {
+                            moveNumber: current().moveNumber,
+                            toMove: current().toMove,
+                            lastBeforeMove: current().lastBeforeMove,
+                        };
+                    }
+
+                    const token = line.slice(tokenStart, ci);
+
+                    const moveNumberMatch = token.match(MOVE_NUMBER_REGEX);
+                    if (moveNumberMatch) {
+                        current().moveNumber = parseInt(moveNumberMatch[1], 10);
+                        continue;
+                    }
+                    if (NAG_REGEX.test(token)) { continue; }
+                    if (RESULT_TOKEN_REGEX.test(token)) { continue; }
+
+                    if (SAN_REGEX.test(token) || LAN_REGEX.test(token)) {
+                        this.advanceMoveState(current());
+                        continue;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
 }
 
-export const pgnValidator: LanguageValidator = new PgnValidator();
+export const pgnValidator: PgnValidator = new PgnValidator();
