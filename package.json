@@ -3,6 +3,7 @@
   "displayName": "Chess Formats",
   "description": "Syntax highlighting and validation for chess-related data formats like PGN and EPD",
   "version": "0.0.1",
+  "publisher": "FGiesemann",
   "engines": {
     "vscode": "^1.138.0"
   },
