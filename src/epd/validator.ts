@@ -2,33 +2,36 @@ import * as vscode from 'vscode';
 import { LanguageValidator } from '../common/types';
 
 interface OperandSpec {
-    type: 'string' | 'move' | 'moves' | 'integer' | 'positiveInteger'
+    type: 'string' | 'move' | 'integer' | 'positiveInteger'
     | 'identifier' | 'any' | 'none';
-    count: 'one' | 'optional' | 'zeroOrMore' | 'even' | 'none' | 'any';
+    count: 'one' | 'two' | 'optional' | 'zeroOrMore' | 'even' | 'none' | 'any';
 }
 
 const OPCODE_SPECS: Record<string, OperandSpec> = {
-    bm: { type: 'moves', count: 'zeroOrMore' },
-    em: { type: 'moves', count: 'zeroOrMore' },
-    id: { type: 'string', count: 'one' },
-    hmvc: { type: 'integer', count: 'one' },
-    fmvn: { type: 'positiveInteger', count: 'one' },
-    pm: { type: 'move', count: 'one' },
-    sm: { type: 'move', count: 'one' },
-    pv: { type: 'moves', count: 'zeroOrMore' },
-    rc: { type: 'positiveInteger', count: 'one' },
-    nic: { type: 'string', count: 'optional' },
-    resign: { type: 'none', count: 'none' },
-    noop: { type: 'any', count: 'zeroOrMore' },
-    refcom: { type: 'identifier', count: 'one' },
-    refereq: { type: 'identifier', count: 'one' },
-    ts: { type: 'any', count: 'even' },
-    ptp: { type: 'any', count: 'even' },
-    acd: { type: 'integer', count: 'one' },
+    acn: { type: 'positiveInteger', count: 'one' },
+    acs: { type: 'positiveInteger', count: 'one' },
+    am: { type: 'move', count: 'zeroOrMore' },
+    bm: { type: 'move', count: 'zeroOrMore' },
     ce: { type: 'integer', count: 'one' },
-    dm: { type: 'integer', count: 'one' },
-    sv: { type: 'any', count: 'any' },
-    tc: { type: 'any', count: 'any' },
+    dm: { type: 'positiveInteger', count: 'one' },
+    draw_accept: { type: 'none', count: 'none' },
+    draw_claim: { type: 'none', count: 'none' },
+    draw_offer: { type: 'none', count: 'none' },
+    draw_reject: { type: 'none', count: 'none' },
+    eco: { type: 'string', count: 'optional' },
+    fmvn: { type: 'positiveInteger', count: 'one' },
+    hmvc: { type: 'positiveInteger', count: 'one' },
+    id: { type: 'string', count: 'one' },
+    nic: { type: 'string', count: 'optional' },
+    noop: { type: 'any', count: 'zeroOrMore' },
+    pm: { type: 'move', count: 'one' },
+    pv: { type: 'move', count: 'zeroOrMore' },
+    rc: { type: 'positiveInteger', count: 'one' },
+    resign: { type: 'none', count: 'none' },
+    sm: { type: 'move', count: 'one' },
+    tcgs: { type: 'positiveInteger', count: 'one' },
+    tcri: { type: 'string', count: 'two' },
+    tcsi: { type: 'string', count: 'two' },
 };
 
 const MOVE_REGEX = /^(?:O-O-O|O-O|0-0-0|0-0|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)$/;
@@ -329,6 +332,18 @@ class EpdValidator implements LanguageValidator {
             return;
         }
 
+        if (trimmed.length !== 2) {
+            if (spec.count === 'two') {
+                out.push(
+                    new vscode.Diagnostic(
+                        new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
+                        `Opcode '${opcode}' requires two operands`,
+                        vscode.DiagnosticSeverity.Error
+                    )
+                );
+            }
+        }
+
         if (spec.type === 'string') {
             if (!/^"(?:[^"\\]|\\.)*"$/.test(trimmed)) {
                 out.push(
@@ -382,33 +397,33 @@ class EpdValidator implements LanguageValidator {
         }
 
         if (spec.type === 'move') {
-            if (!MOVE_REGEX.test(trimmed)) {
-                out.push(
-                    new vscode.Diagnostic(
-                        new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
-                        `Opcode '${opcode}' expects a single move, found '${trimmed}'`,
-                        vscode.DiagnosticSeverity.Error
-                    )
-                );
-            }
-            return;
-        }
-
-        if (spec.type === 'moves') {
-            const moves = trimmed.split(/\s+/);
-            for (const move of moves) {
-                if (!MOVE_REGEX.test(move)) {
+            if (spec.count === 'one') {
+                if (!MOVE_REGEX.test(trimmed)) {
                     out.push(
                         new vscode.Diagnostic(
                             new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
-                            `Opcode '${opcode}' contains an invalid move: '${move}'`,
+                            `Opcode '${opcode}' expects a single move, found '${trimmed}'`,
                             vscode.DiagnosticSeverity.Error
                         )
                     );
-                    return;
                 }
+                return;
+            } else if (spec.count === 'zeroOrMore') {
+                const moves = trimmed.split(/\s+/);
+                for (const move of moves) {
+                    if (!MOVE_REGEX.test(move)) {
+                        out.push(
+                            new vscode.Diagnostic(
+                                new vscode.Range(lineIndex, operandOffset, lineIndex, operandOffset + operandText.length),
+                                `Opcode '${opcode}' contains an invalid move: '${move}'`,
+                                vscode.DiagnosticSeverity.Error
+                            )
+                        );
+                        return;
+                    }
+                }
+                return;
             }
-            return;
         }
     }
 
