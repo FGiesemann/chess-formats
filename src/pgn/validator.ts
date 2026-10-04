@@ -23,6 +23,8 @@ const MOVE_NUMBER_REGEX = /^(\d+)(\.{1,3})$/;
 const NAG_REGEX = /^\$\d+$/;
 const RESULT_TOKEN_REGEX = /^(?:1-0|0-1|1\/2-1\/2|\*)$/;
 
+const FEN_REGEX = /^\s*([rnbqkpRNBQKP1-8/]+)\s+([wb])\s+(-|[KQkq]+)\s+(-|[a-h][36])\s+(\d+)\s+(\d+)\s*$/;
+
 interface Tag {
     name: string;
     value: string;
@@ -174,11 +176,7 @@ class PgnValidator implements LanguageValidator {
         return games;
     }
 
-    private checkTags(
-        game: GameSection,
-        text: string,
-        out: vscode.Diagnostic[]
-    ) {
+    private parseTags(game: GameSection, out: vscode.Diagnostic[]): Tag[] {
         const parsedTags: Tag[] = [];
 
         for (const raw of game.tags) {
@@ -207,6 +205,16 @@ class PgnValidator implements LanguageValidator {
             });
         }
 
+        return parsedTags;
+    }
+
+    private checkTags(
+        game: GameSection,
+        text: string,
+        out: vscode.Diagnostic[]
+    ) {
+        const parsedTags = this.parseTags(game, out);
+
         for (const tag of parsedTags) {
             if (tag.name === 'Result' && !VALID_RESULTS.includes(tag.value)) {
                 out.push(
@@ -222,6 +230,15 @@ class PgnValidator implements LanguageValidator {
                     new vscode.Diagnostic(
                         new vscode.Range(tag.lineIndex, 0, tag.lineIndex, tag.raw.length),
                         `Date tag must use format YYYY.MM.DD with ?? for unknown parts`,
+                        vscode.DiagnosticSeverity.Error
+                    )
+                );
+            }
+            if (tag.name === 'FEN' && !FEN_REGEX.test(tag.value)) {
+                out.push(
+                    new vscode.Diagnostic(
+                        new vscode.Range(tag.lineIndex, 0, tag.lineIndex, tag.raw.length),
+                        `FEN tag does not look like a valid FEN string`,
                         vscode.DiagnosticSeverity.Error
                     )
                 );
@@ -273,6 +290,19 @@ class PgnValidator implements LanguageValidator {
         }
     }
 
+    private getInitialState(tags: Tag[]): MoveState {
+        const fenTag = tags.find(t => t.name === 'FEN');
+        if (fenTag) {
+            const match = fenTag.value.match(FEN_REGEX);
+            if (match) {
+                const toMove = match[2] === 'b' ? 'b' : 'w';
+                const moveNumber = parseInt(match[6], 10) || 1;
+                return { moveNumber, toMove, lastBeforeMove: null };
+            }
+        }
+        return { moveNumber: 1, toMove: 'w', lastBeforeMove: null };
+    }
+
     private checkMovetext(
         game: GameSection,
         text: string,
@@ -285,6 +315,9 @@ class PgnValidator implements LanguageValidator {
         const movetext = text.slice(start, end);
         const lines = this.splitLinesWithOffsets(movetext);
         const baseLineIndex = this.offsetToLineIndex(text, start);
+
+        const parsedTags = this.parseTags(game, []);
+        const initialState = this.getInitialState(parsedTags);
 
         let parenDepth = 0;
         let braceDepth = 0;
@@ -300,15 +333,16 @@ class PgnValidator implements LanguageValidator {
         let lastResultValue: string | null = null;
         let lastTokenText = '';
 
-        const stateStack: MoveState[] = [
-            { moveNumber: 1, toMove: 'w', lastBeforeMove: null },
-        ];
+        const stateStack: MoveState[] = [initialState];
 
         const current = (): MoveState => stateStack[stateStack.length - 1];
 
         const pushVariation = () => {
             const c = current();
-            const inherited = c.lastBeforeMove ?? { moveNumber: c.moveNumber, toMove: c.toMove };
+            const inherited = c.lastBeforeMove ?? {
+                moveNumber: c.moveNumber,
+                toMove: c.toMove,
+            };
             stateStack.push({
                 moveNumber: inherited.moveNumber,
                 toMove: inherited.toMove,
@@ -399,13 +433,15 @@ class PgnValidator implements LanguageValidator {
                 }
 
                 const tokenStart = ci;
-                while (ci < line.length &&
+                while (
+                    ci < line.length &&
                     !/\s/.test(line[ci]) &&
                     line[ci] !== '(' &&
                     line[ci] !== ')' &&
                     line[ci] !== '{' &&
                     line[ci] !== '}' &&
-                    line[ci] !== ';') {
+                    line[ci] !== ';'
+                ) {
                     ci++;
                 }
                 const token = line.slice(tokenStart, ci);
@@ -585,30 +621,12 @@ class PgnValidator implements LanguageValidator {
             );
         }
 
-        if (!inVariation && num < state.moveNumber) {
-            out.push(
-                new vscode.Diagnostic(
-                    new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
-                    `Move number ${num} is lower than expected ${state.moveNumber}`,
-                    vscode.DiagnosticSeverity.Warning
-                )
-            );
-        }
-
         if (num !== state.moveNumber) {
             out.push(
                 new vscode.Diagnostic(
                     new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
                     `Unexpected move number ${num}, expected ${state.moveNumber}`,
                     vscode.DiagnosticSeverity.Error
-                )
-            );
-        } else if (num === state.moveNumber + 1 && !isWhiteTurn) {
-            out.push(
-                new vscode.Diagnostic(
-                    new vscode.Range(docLine, tokenStart, docLine, tokenStart + token.length),
-                    `Move number ${num} starts a new move, but it is Black's turn`,
-                    vscode.DiagnosticSeverity.Warning
                 )
             );
         }
