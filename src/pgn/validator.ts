@@ -292,6 +292,8 @@ class PgnValidator implements LanguageValidator {
         let lastContentIsResult = false;
         let lastResultValue: string | null = null;
 
+        let lastContentLength = 0;
+
         for (let li = 0; li < lines.length; li++) {
             const line = lines[li].text;
             const docLine = baseLineIndex + li;
@@ -374,6 +376,7 @@ class PgnValidator implements LanguageValidator {
 
                 lastContentLine = docLine;
                 lastContentChar = tokenStart;
+                lastContentLength = token.length;
 
                 if (token === '1-0' || token === '0-1' || token === '1/2-1/2' || token === '*') {
                     lastContentIsResult = true;
@@ -410,6 +413,32 @@ class PgnValidator implements LanguageValidator {
                 new vscode.Diagnostic(
                     new vscode.Range(baseLineIndex, 0, baseLineIndex, lines[0]?.text.length ?? 0),
                     `Empty movetext`,
+                    vscode.DiagnosticSeverity.Error
+                )
+            );
+            return;
+        }
+
+        const lastTokenText = lines[lastContentLine - baseLineIndex].text.slice(
+            lastContentChar,
+            lastContentChar + lastContentLength
+        );
+
+        if (!lastContentIsResult || lastResultValue === null) {
+            const markerLike =
+                /^[0-9/\-]+$/.test(lastTokenText) && /[-\/]/.test(lastTokenText);
+            const message = markerLike
+                ? `Invalid game termination marker '${lastTokenText}' (expected 1-0, 0-1, 1/2-1/2 or *)`
+                : `Missing game termination marker (1-0, 0-1, 1/2-1/2 or *)`;
+            out.push(
+                new vscode.Diagnostic(
+                    new vscode.Range(
+                        lastContentLine,
+                        lastContentChar,
+                        lastContentLine,
+                        lastContentChar + lastContentLength
+                    ),
+                    message,
                     vscode.DiagnosticSeverity.Error
                 )
             );
