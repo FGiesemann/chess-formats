@@ -29,7 +29,23 @@ Syntax highlighting, validation, and hover information for chess PGN and EPD fil
 
 ## Screenshots
 
-*(Add screenshots here showing validation squiggles, hover on a move, and hover on a NAG.)*
+### Syntax highglighting for EPD
+
+![Syntax highlighting in EPD files](images/epd-syntax.png)
+
+### Hovers in PGN Files
+
+![Move number and player to move in PGN](images/move-number-hover.png)
+
+### Validation for PGN Files
+
+Checking of move numbers:
+
+![Squiggles for invalid move numbers](images/move-number-squiggles.png)
+
+Checking of game termination marker:
+
+![Squiggles for mismatch in game termination marker](images/result-mismatch-squiggles.png)
 
 ## Usage
 
